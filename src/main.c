@@ -120,6 +120,7 @@ TODO:
 - string splitting and cleaning is done, need to work on reading lines into a 
 	dataframe format, storing column info, table info, etc.
 
+
 NOTES:
 - Reading in text files - is the only way to iterate over rows?
 - If all columns are the same data-type, then the dataframe can be treated as a
