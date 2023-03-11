@@ -1,0 +1,10 @@
+{
+    "files.associations": {
+        "*.rmd": "markdown",
+        "*.Rmd": "markdown",
+        "bitset": "c",
+        "chrono": "c",
+        "cvector_utils.h": "c",
+        "stdio.h": "c"
+    }
+}
