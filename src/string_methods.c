@@ -52,7 +52,7 @@ char** str_split(char* the_str, const char the_delim) {
 	return result_arr;
 }
 
-char* trim_witespace_inplace(char *s) {
+char* strip_witespace(char *s) {
 	//https://stackoverflow.com/questions/122616/how-do-i-trim-leading-trailing-whitespace-in-a-standard-way
 	char *original = s;
 	size_t len = 0;

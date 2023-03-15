@@ -2,13 +2,13 @@
 
 #include <stdio.h>
 #include <stdlib.h>
-// #include <string.h>
 #include <assert.h>
 #include <ctype.h>
 
 #include "cvector.h"
 #include "cvector_utils.h"
 #include "string_methods.h"
+#include "readfile.h"
 
 #define BUFSIZE 8192 //eventually this will have to be much bigger or dynamic 
 #define END_OF_LINE -1
@@ -45,26 +45,27 @@ char** read_line(char *line) {
 	char **elements;
 	const char delim = ',';
 	elements = str_split(line, delim);
+	// trim whitepace: memcpy (https://stackoverflow.com/questions/26329140/replacing-strings-in-an-array-in-c)
 	return elements;
 }
 
 int get_types(char **tokens) {
 	printf("Getting types...\n");
 	for (size_t i = 0; *(tokens + i); i++) {
-		printf("%s %d\n",
-			 *(tokens + i),
-			 digits_and_decimal(*(tokens + i)));
+		// Trime whitespace, then evaluate to see if it is a digit
+		char *tokenp = *(tokens + i);
+		strip_witespace(tokenp);
+		if (digits_only(tokenp)) {
+			printf("%s is an int\n", tokenp);
+		} else if (digits_and_decimal(tokenp)) {
+			printf("%s is a float\n", tokenp);
+		} else {
+			printf("%s is a string\n", tokenp);
+		}
 	}
 	return 0;
 }
 
-
-// TODO:
-// Start implementing data.frame
-// Implement cvector_extras as needed (sorting, unique, etc.)
-//		Look at R's vector and see what methods are established.
-//		Also, technically R's data.frames are named lists of arrays, where the
-//		arrays (/vectors) are required to be the same length. 
 
 
 
@@ -111,23 +112,22 @@ int load_file(int argc, char **argv) {
 }
 
 
+void test_readfile(int argc, char **argv) {
+	// TODO: implement piping input from command line https://www.delftstack.com/howto/c/pipe-in-c/
+	if (argc == 1) {
+		fprintf(stderr, "ERROR: No file provided.\n");
+		return;
+	}
+	read_file(argv[1]);
+}
+
+
 int main(int argc, char **argv) {
-	load_file(argc, argv);
+	// load_file(argc, argv);
+	test_readfile(argc, argv);
 }
 
 /*
-TODO:
-- string splitting and cleaning is done, need to work on reading lines into a 
-	dataframe format, storing column info, table info, etc.
-
-
 NOTES:
-- Reading in text files - is the only way to iterate over rows?
-- If all columns are the same data-type, then the dataframe can be treated as a
-  matrix and could in theory use a contiguous array for all data 
-- How to define NA values (NULL ? then control flow for null)
-
-
-
-columns cut cl tool: https://github.com/ColumPaget/ColumsCut
+	columns cut cl tool: https://github.com/ColumPaget/ColumsCut
 */
