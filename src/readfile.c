@@ -13,6 +13,7 @@
 
 #include "readfile.h"
 
+#define MAXCOLS 1000 //TODO: pick a more appropriate number
 extern int errno;
 
 /* Private globals */
@@ -28,6 +29,8 @@ static bool header = true; //is the first row a row of column names
 // To clean up on error or return
 // static void *mmp = NULL;
 // static void *mmp_copy = NULL;
+char **colnames;
+static size_t ncols = 0;
 static size_t fileSize;
 static int8_t *type = NULL, *tmpType = NULL, *size = NULL;
 // static lenOff *colNames = NULL;
@@ -43,19 +46,23 @@ struct mainArgs {
     bool stripWhite;
     bool header;
     bool keepLeadingZeros; 
+    char *colselect[2];
 };
 
 struct mainArgs args = {
     .rowLimit = INT64_MAX,
-    .sep = ',',
+    .sep = 0,
     .dec = '.',
     .quote = '"',
     .stripWhite = true,
     .header = true,
     .keepLeadingZeros = true,
+    // .colselect = {"\"mpg\"", "\"drat\""} 
+    .colselect = {"\"drat\"", "\"mpg\""} 
+    //TODO: parse these from user input, make colselect[0]=NULL if not using, maybe rm quotes so user doesnt have to deal w it
 }; 
 
-struct Field {
+struct FieldContext {
     int32_t off; //offset from sol
     int32_t len; //len from off to end of field
 };
@@ -68,30 +75,24 @@ struct FieldParserContext {
 };
 
 /* Utils */
-
-bool readfile_cleanup(void) {
+void readfile_cleanup(void) {
     free(type); type = NULL;
     free(tmpType); tmpType = NULL;
     free(size); size = NULL;
-    bool requires_clean = false;
-    // bool requires_clean = (mmp);
-    // if (mmp != NULL) {
-    //     if (munmap(mmp, fileSize)) {
-    //         printf("System error %d when unmapping file: %s\n", 
-    //                 errno, strerror(errno));
-    //     mmp = NULL;
-    //     }
-    // }
+    if (ncols > 0) {
+        for (size_t i = 0; i < ncols; i++) {
+            free(colnames[i]);
+        }
+        free(colnames); colnames = NULL;
+        ncols = 0;
+    }
     fileSize = 0;
     sol = eol = NULL;
     sep = whiteChar = quote = dec = '\0';
     stripWhite = fill = true;
-
-    // printf("\nFile successfully unmapped.\n");
-    return requires_clean;
 }
 
-// Recast a 'const char' as a 'char/
+// // Recast a 'const char' as a 'char'
 // static char* _const_cast(const char *ptr) {
 //     union {const char *a; char *b;} tmp = { ptr };
 //     return tmp.b;
@@ -124,6 +125,63 @@ bool test_moveto_eol(const char **pch) {
     return false; //if accounting for case of file with one single \r, see fread.c eol() 
 }
 
+// the delims we auto-check for
+// note: wont check for space, since all filetypes have lots of spaces
+int isdelim(const char c) {
+    if (c==',' || c=='\t' || c=='|' || c==';' || c==':') {
+        return 1;
+    }
+    return 0;
+}
+// TODO? do we need to consider quote rules here?
+char detect_fieldsep(const char *ch, int32_t llen) {
+    char sep = 0;
+    const char *eol = ch + llen;
+    // skip any leading whitespace
+    while (isspace(*ch) && ch < eol) ch++;
+    enum seps{comma = 0, tab, pipe, semi, colon};
+    int nseps = 6;
+    int scores[nseps]; //initialize w zeros
+    memset(scores, 0, sizeof(scores));
+    // simple: count n of ocurrences of each sep in the given line
+    while (ch < eol) {
+        if (!isdelim(*ch)) {
+            // printf(" %c ", *ch);
+            ch++;
+        } else {
+            // printf(" !%c!", *ch);
+            switch(*ch++) {
+                case ',' : scores[comma]++; break;
+                case '\t': scores[tab]++; break;
+                case '|' : scores[pipe]++; break;
+                case ';' : scores[semi]++; break;
+                case ':' : scores[colon]++; break;
+            }
+        }
+    }
+    int best_score = scores[comma];
+    int best_sep = comma;
+    for (int i = 1; i < nseps; ++i) {
+        if (scores[i] > best_score) {
+            best_sep = i;
+            best_score = scores[i];
+        }
+    }
+    // printf("best sep: %d, score: %d\n", best_sep, best_score);
+    if (best_score > 0) {
+        switch(best_sep) {
+            case comma : sep = ','; break;
+            case tab   : sep = '\t'; break;
+            case pipe  : sep = '|'; break;
+            case semi  : sep = ';'; break;
+            case colon : sep = ':'; break;
+        }
+    } else {
+        sep = '\0';
+    }
+    return sep;
+}
+
 // Test if the current character is at the end of a field - either based on 'sep'
 // or based on a line-ending sequence
 bool test_end_of_field(const char *ch) {
@@ -131,40 +189,10 @@ bool test_end_of_field(const char *ch) {
                                         && (ch==eol || test_moveto_eol(&ch))));
 }
 
-// Given a FieldParserContext pointing to the start of a potential field, 
-// advance its 'ch' ptr to the actual start of the field and calculate the 
-// length to the proper end of the field.
-// Field can be obtained immeditely after by ch - len
-// void parse_field(const char **pch, const char **pFieldStart, int32_t *pFieldLen) {
-//     const char *ch = *pch;
-//     const char *fieldStart;
-//     int32_t fieldLen;
-//     // const char *fieldStart;
-//     // int32_t fieldLen = 0;
-//     // skip leading spaces
-//     if ((*ch == ' ' && stripWhite) || (*ch == '\0' && ch < eol)) {
-//         while(*(ch) == ' ' || (*ch == '\0' && ch < eol)) {ch++; }
-//     } 
-//     fieldStart = ch;
-//     // TODO: implement alternative quote rules. For now, just keep all quotes.
-//     // if (*ch != quote ) or it does but we want to keep them:  
-//     {
-//         while (!test_end_of_field(ch)) ch++; //will end on sep, \n, \r, or eol
-//         fieldLen = (int32_t)(ch - fieldStart);
-//         // remove any lagging spaces 
-//         while (fieldLen > 0 && ((ch[-1]==' ' && stripWhite) || ch[-1]=='\0')) {
-//             fieldLen--; ch--;
-//         }
-//         if (fieldLen == 0) fieldLen = INT32_MIN; //blanks are NAs
-//     }
-//     *pch = ch;
-//     *pFieldStart = fieldStart;
-//     *pFieldLen = fieldLen;
-// }
-
-
+// Advance the char pointer to the end of the current field, advancing the
+// offset from the start of the line and calculating the field len (n chars)
 void parse_field(const char **pch, int32_t *pFieldOff, int32_t *pFieldLen) {
-    // Idea - advance fieldOff to be an int from start of line to start of field
+    // Idea - advance fieldOff to be an int from start-of-line to start-of-field,
     //        then record fieldLen from start-of-field to end-of-field
     const char *ch = *pch;
     int32_t fieldOff = *pFieldOff;
@@ -208,7 +236,7 @@ int countfields(const char *ch) {
     while (ch < eol) {
         parse_field(&ch, &fieldOff, &fieldLen); 
         //parse_field advances ch to either sep, \n, \r, or eol
-        if (sep == ' ' && *ch==sep) {
+        if (sep==' ' && *ch==sep) {
             while (ch[1]==' ') ch++; //skip over multiple spaces
             // if next character is an end-of-line char, advance to it
             if (ch[1] == '\r' || ch[1] == '\n' || (ch[1] == '\0' && ch+1 == eol)) {
@@ -230,13 +258,14 @@ int countfields(const char *ch) {
     return ncol;
 }
 
-int iterfields(const char *ch, int n_fields, struct Field *fields) {
-    // skip starting spaces even if sep==space, since they don't break up fields,
-    // (skip_whitechar would ignore them since it doesn't skip seps)
+int iterfields(const char *ch, int n_fields, struct FieldContext *fields) {
+    //TODO: implement checking if n of parsed fields == n_fields, & error handling
     const char *start = ch;
     int32_t fieldOff = 0;
     int32_t fieldLen = 0;
     int ncol = 1;
+    // skip starting spaces even if sep==space, since they don't break up fields,
+    // (skip_whitechar ignores them since it doesn't skip seps)
     if (sep == ' ') while (*ch == ' ') {ch++;}
     skip_whitechar(&ch);
     if (test_moveto_eol(&ch)) {
@@ -271,6 +300,11 @@ int iterfields(const char *ch, int n_fields, struct Field *fields) {
         if (ch!=eol) return -1; //should be only reachable if sep & quote rule are invalid for this line
     }
     return ncol;
+}
+
+
+void head(void) {
+    return;
 }
 
 
@@ -310,7 +344,6 @@ void get_field_type(struct FieldParserContext *ctx) {
     printf("\t| int = %s\n", isint ? "true" : "false");
 }
 
-
 int detect_types(const char **pch, int ncols) {
     const char *ch = *pch;
     int ncol = 0;
@@ -347,10 +380,6 @@ int detect_types(const char **pch, int ncols) {
 
 
 int read_file(char *filename) {
-
-    if (readfile_cleanup()) {
-        printf("Previous session was not cleaned up. Successfully cleaned now.");
-    }
     // ================================
     // [1] Process Arguments
     // ================================
@@ -363,10 +392,11 @@ int read_file(char *filename) {
     quote = args.quote;
     stripWhite = args.stripWhite;
     header = args.header;
-    whiteChar = (sep == ' ' ? '\t' : (sep == '\t' ? ' ' : 0));
+    whiteChar = (sep == ' ' ? '\t' : (sep == '\t' ? ' ' : 0)); //0: both
     
     // Set some local args
-    int64_t rowLimit = args.rowLimit;
+    // int64_t rowLimit = args.rowLimit;
+    ////////////////////////////////////////////////////////////////////////////
     //=========================================================================
     // [2] Open file and determine where first row starts
     // Need to determine if we need to skip any lines or characters
@@ -376,16 +406,18 @@ int read_file(char *filename) {
     if (fp == NULL) {
         STOP("ERROR %d: %s. (File could not be read).\n", errno, strerror(errno));
     }
-    int skiprows = 0;  //n rows to skip before we start processing txt
-    int skipchars = 0; //in first row, n of chars to skip before we start processing txt
 
-    size_t lsize = 0;
+    ////////////////////////////////////////////////////////////////////////////
+    printf("[3] Finding start of data.\n");
+    int skiprows = 0;  //n rows to skip before start processing txt
+    int skipchars = 0; //in first usable row, n of chars to skip before start processing txt
+    int delim = '\n'; //TODO: implement the other common delims (\t, |, etc)
     char* line = NULL;
+    size_t lsize = 0;
     ssize_t llen = 0;
-    int delim = '\n';
+    // getdelim returns n of chars read, or -1 if fail
     while ((llen = getdelim(&line, &lsize, delim, fp)) > -1) { 
-        // getdelim returns n of chars read, or -1 if fail
-        sol = line;
+        sol = line; //TODO: don't know if i want these to actually be globals
         eol = line + llen;
         // skip empty lines
         if (llen == 0) {
@@ -393,7 +425,7 @@ int read_file(char *filename) {
             skiprows++;
             continue;
         }
-        // skip over UTF-8 BOM. 
+        // skip over UTF-8 BOM.
         // TODO: handle other encodings - https://en.wikipedia.org/wiki/Byte_order_mark
         if (llen > 3 && memcmp(line, "\xEF\xBB\xBF", 3) == 0) {
             sol += 3;
@@ -413,51 +445,93 @@ int read_file(char *filename) {
             skipchars = 0;
             continue;
         }
-        // parse n cols & header
+        ///////////////////////////////////////////////////////////////////////
+        printf("[4] Extracting field info.\n");
+        if (!args.sep) {
+            sep = detect_fieldsep(sol, llen);
+            printf("Detected field seperator: '%c' (%d)\n", sep, sep);
+        }
+        ///////////////////////////////////////////////////////////////////////
+        printf("[5] Extracting column info.\n");
+        // Get number of columns (count n fields in header row)
         int ncols = countfields(sol);
         if (ncols < 0) STOP("ERROR: In 'countfields', could not parse number of cols.\n");
         if (ncols == 0) STOP("ERROR: Zero columns found.\n"); //these cases should be skipped above already
+        if (ncols > MAXCOLS) STOP("ERROR: Number of cols exceeds maximum.\n");
         printf("NUMBER OF COLS: %d\n", ncols);
 
-        struct Field fields[ncols];
-        if (iterfields(sol, ncols, fields) < 1) STOP("No column names found\n");
-        // TODO: 
-        // Store the column names in something (might just need to memcpy them) - assuming there is a header row, otherwise give names like V1, V2, etc
+        // Determine number of 'active' columns - ie, have been selected for use.
+        // If this is not specified by the user, then we assume to use all cols.
+        // 'colselect_inds' are the indices in the array of colnames which 
+        // correspond to active columns.
+        // TODO: we want the user to be able to specify cols by number, too.
+        int n_colselect = ncols;
+        if (args.colselect[0]) {
+            n_colselect = (int)(sizeof(args.colselect) / sizeof(args.colselect[0]));
+            printf("NUMBER OF SELECTED COLS: %d\n", n_colselect);
+        }
+        int colselect_inds[n_colselect];
+        // Iterate over header to extract field pointers, then strip colnames.
+        // While iterating, determine the relative indices of selected columns.
+        // TODO: if args.header is false, make colnames like V1, V2, etc. for sake of printing
+        struct FieldContext fields[ncols];
+        if (iterfields(sol, ncols, fields) < 1) STOP("Column names could not be parsed.\n");        
+        colnames = malloc(ncols * sizeof(char*));
+        int n_colsfound = 0;
+        for (int i = 0; i < ncols; i++) {
+            // Write colname from the file line into the colnames array of str 
+            colnames[i] = (char*)malloc(sizeof(char) * (fields[i].len+1));
+            memcpy(colnames[i], sol+fields[i].off, fields[i].len); //dest, src, n
+            colnames[i][fields[i].len] = '\0';
+            // Check if the colname matches one of the selected cols
+            if (n_colsfound < n_colselect && args.colselect[0]) {
+                for (int s = 0; s < n_colselect; s++) {
+                    // TODO: eliminate redoing a strcmp for indices which held a selected col 
+                    if (strcmp(colnames[i], args.colselect[s]) == 0) {
+                        colselect_inds[n_colsfound] = i;
+                        n_colsfound++;
+                        printf("  %d/%d selected cols found.\n", n_colsfound, n_colselect);
+                    }
+                } // iter over selected cols
+            }
+        } // iter over all cols 
+
+        // TODO: Auto-detect delimiter if not provided.
         // Next: figure out how we're going to iterate through all the data and pluck out the cols we're interested in.
         // maybe, 
-
-        // if (args.header) {
-        //     // this line we've reached is the column names
-        // }
+        printf("Column Names:\n");
         for (int i = 0; i < ncols; i++) {
             printf("Field: ");
-            for (int j = 0; j < fields[i].len; ++j) printf("%c", *(sol + fields[i].off + j));
+            for (int j = 0; j < fields[i].len; ++j) printf("%c", *(colnames[i] + j)); //sol + fields[i].off
             printf("\t(off = %d | len = %d)\n", fields[i].off, fields[i].len);
         }
 
-        for (int i = 0; *(sol + i); i++) {
-            printf("%c ", *(sol + i));
-        }
-        printf("\nline: %s\n", line);
-        printf("processed line: %s\n", sol);
+        // for (int i = 0; *(sol + i); i++) printf("%c ", *(sol + i));
+        printf("\ninput line: %s", line);
         printf("nchars: %ld | bufsize : %ld\n", llen, lsize);
+        printf("processed line: %s", sol);
         printf("skiprows: %d | skipchar %d\n", skiprows, skipchars);
         break;
-    } 
+    }
+    if (llen == -1 && errno==0) {
+        printf("WARNING: Reached end of file and found only whitespace.\n");
+    } else if (llen == -1) {
+        printf("ERROR %d: %s (Internal error reading file).\n", errno, strerror(errno));
+    }
     free(line);
 
-
-
-    if (fclose(fp) == EOF) {
-        STOP("ERROR %d: %s. (Failed in closing file).", errno, strerror(errno));
-    }
-    readfile_cleanup();
-    return 1;
     // rewind(fp);
     // while ((llen = getdelim(&line, &lsize, delim, fp)) > -1) { 
     //     printf("%s\n", line);
     //     break;
     // }
+
+    if (fclose(fp) == EOF) STOP("ERROR %d: %s. (Failed in closing file).", 
+                                 errno, strerror(errno));
+    printf("[*] cleanup\n");
+    readfile_cleanup();
+    return 1;
+
     //=========================================================================
     // [3] Handle Byte-Order-Mark
     //     Files could contain start (and end) bytes based on their encoding 
