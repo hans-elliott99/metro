@@ -1,7 +1,5 @@
-// #include <sys/mman.h> //mmap
-// #include <sys/stat.h> //fstat
-// #include <fcntl.h> //open
 
+#define _GNU_SOURCE //for getdelim
 #include <stdio.h> //printf, fopen/fclose, getdelim
 #include <stdint.h> //int_t
 #include <string.h> //strlen
