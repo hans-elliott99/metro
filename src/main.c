@@ -5,8 +5,6 @@
 #include <assert.h>
 #include <ctype.h>
 
-#include "cvector.h"
-#include "cvector_utils.h"
 #include "string_methods.h"
 #include "readfile.h"
 
@@ -21,15 +19,6 @@ enum DataTypes {
 	DOUBLE = 3
 };
 
-
-struct FileReader {
-	char **names;
-	char **keep_names;
-	int *types;
-	size_t start_row;
-	size_t start_col;
-	cvector_vector_type(char**) rows;
-};
 
 char** read_header(char *line) {
 	// Take in first line, determine number of columns (and eventually data type)
