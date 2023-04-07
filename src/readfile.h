@@ -3,8 +3,6 @@
 
 // #include <stdlib.h>
 // #include <stdio.h>
-
-int read_file(char *filename);
-
+int read_file(void);
 
 #endif //READFILE_H_

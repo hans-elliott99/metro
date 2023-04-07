@@ -1,0 +1,301 @@
+#include <stdbool.h> //true, false
+#include <stdint.h> //int32_t, int64_t, etc
+#include <ctype.h> //isspace, isdigit, 
+#include <string.h> //strlen, memset
+
+#include "common.h"
+
+char **colnames = NULL;
+
+// Default values for some args
+struct Args args = {
+    .filename = NULL,
+    .header = true,
+    .header_keep_quotes = false,
+    .rowLimit = INT64_MIN, //all rows
+    .sep = 0, //guess sep
+    .dec = '.',
+    .quote = '"',
+    .colselect = NULL,
+    //
+    .skiprows = 0,
+    .skipchars = 0,
+    .ncols = 0,
+    .n_colselect = 0,
+    .col_is_selected = NULL,
+    .selected_col_inds = NULL,
+    .whiteChar = 0,
+    .stripWhite = true
+};
+
+
+/////////////////////////////// HELPERS ////////////////////////////////////////
+void clean_globals(void) {
+    if (args.colselect) {
+        printf("freeing args.colselect\n");
+        for (int i = 0; i < args.n_colselect; ++i) {
+            free(args.colselect[i]);
+        }
+        free(args.colselect); args.colselect = NULL;
+    }
+    if (args.col_is_selected) {
+        printf("freeing args.col_is_selected\n");
+        free(args.col_is_selected); args.col_is_selected = NULL;
+    }
+    if (args.selected_col_inds) { 
+        printf("freeing args.selected_col_inds\n");
+        free(args.selected_col_inds); args.selected_col_inds = NULL;
+    }
+    if (colnames) {
+        printf("freeing colnames\n");
+        for (int i = 0; i < args.ncols; ++i) {
+            free(colnames[i]);
+        }
+        free(colnames); colnames = NULL;
+    }
+} 
+
+
+
+// arr = 2, 3, 5, 9  | val = 5
+//     --0--1--^ ----> return 2
+int array_pos(int *arr, int val, size_t arr_size) {
+    if (arr) {
+        for (size_t i = 0; i < arr_size; ++i) {
+            if (arr[i] == val) {
+                return i;
+            }
+        }
+    }
+    return -1;
+}
+
+
+// // Recast a 'const char' as a 'char'
+// static char* _const_cast(const char *ptr) {
+//     union {const char *a; char *b;} tmp = { ptr };
+//     return tmp.b;
+// }
+
+///////////////////////////// FIELD PARSING ////////////////////////////////////
+
+
+// Move to the next non whitespace character
+void skip_whitechar(const char **pch) {
+    char whiteChar = args.whiteChar;
+    const char *ch = *pch;
+    if (whiteChar == 0) {
+        while (*ch == ' ' || *ch == '\t' || (*ch == '\0' && ch < eol)) ch++;
+    } else {
+        while (*ch==whiteChar || (*ch == '\0' && ch < eol)) ch++;
+    }
+    *pch = ch;
+}
+
+
+
+// Given a position, this tests if any common (and not so) line endings occur at 
+// the position and moves to the end of the line if they do.
+// (for a standard newline '\n', pch is not moved since it is already pointing
+// at the end of the line. but if there are carriage returns, we want to move
+// past those)
+bool check_moveto_eol(const char **pch) {
+    const char *ch = *pch;
+    while (*ch == '\r') ch++; //skip leading carriage returns
+    if (*ch == '\n') {
+        while (ch[1] == '\r') ch++; //skip preceding carriage returns
+        *pch = ch;
+        return true;
+    }
+    return false; //if accounting for case of file with one single \r, see fread.c eol() 
+}
+
+
+
+// the delims we auto-check for
+// note: wont check for space, since all filetypes have lots of spaces
+int isdelim(const char c) {
+    if (c==',' || c=='\t' || c=='|' || c==';' || c==':') {
+        return 1;
+    }
+    return 0;
+}
+
+
+
+// TODO? do we need to consider quote rules here?
+char detect_fieldsep(const char *ch, int32_t llen) {
+    char sep = 0;
+    const char *eol = ch + llen;
+    // skip any leading whitespace
+    while (isspace(*ch) && ch < eol) ch++;
+    enum seps{comma = 0, tab, pipe, semi, colon};
+    int nseps = 6;
+    int scores[nseps]; //initialize w zeros
+    memset(scores, 0, sizeof(scores));
+    // simple: count n of ocurrences of each sep in the given line
+    while (ch < eol) {
+        if (!isdelim(*ch)) {
+            // printf(" %c ", *ch);
+            ch++;
+        } else {
+            // printf(" !%c!", *ch);
+            switch(*ch++) {
+                case ',' : scores[comma]++; break;
+                case '\t': scores[tab]++; break;
+                case '|' : scores[pipe]++; break;
+                case ';' : scores[semi]++; break;
+                case ':' : scores[colon]++; break;
+            }
+        }
+    }
+    int best_score = scores[comma];
+    int best_sep = comma;
+    for (int i = 1; i < nseps; ++i) {
+        if (scores[i] > best_score) {
+            best_sep = i;
+            best_score = scores[i];
+        }
+    }
+    // printf("best sep: %d, score: %d\n", best_sep, best_score);
+    if (best_score > 0) {
+        switch(best_sep) {
+            case comma : sep = ','; break;
+            case tab   : sep = '\t'; break;
+            case pipe  : sep = '|'; break;
+            case semi  : sep = ';'; break;
+            case colon : sep = ':'; break;
+        }
+    } else {
+        sep = '\0';
+    }
+    return sep;
+}
+
+
+
+// Test if the current character is at the end of a field - either based on 'sep'
+// or based on a line-ending sequence
+bool check_end_of_field(const char *ch) {
+    return ((*ch==args.sep) || ((*ch=='\n' || *ch=='\r' || *ch=='\0') 
+                                        && (ch==eol || check_moveto_eol(&ch))));
+}
+
+
+
+// Advance the char pointer to the end of the current field, advancing the
+// offset from the start of the line and calculating the field len (n chars)
+void parse_field(const char **pch, int32_t *pFieldOff, int32_t *pFieldLen) {
+    // The idea - advance fieldOff to be an int from start-line to start-field,
+    //        then record fieldLen from start-field to end-field
+    bool stripWhite = args.stripWhite;
+    const char *ch = *pch;
+    int32_t fieldOff = *pFieldOff; // may be greater than 0
+    int32_t fieldLen = 0;
+    // skip leading spaces
+    if ((*ch == ' ' && stripWhite) || (*ch == '\0' && ch < eol)) {
+        while(*(ch) == ' ' || (*ch == '\0' && ch < eol)) {
+            ch++; fieldOff++; 
+        }
+    } 
+    const char *fieldStart = ch;
+    // TODO: implement alternative quote rules. For now, just keep all quotes.
+    // if (*ch != quote ) or it does but we want to keep them:  
+    {
+        while (!check_end_of_field(ch)) ch++; //will end on sep, \n, \r, or eol
+        fieldLen = (int32_t)(ch - fieldStart);
+        // remove any lagging spaces 
+        while (fieldLen > 0 && ((ch[-1]==' ' && stripWhite) || ch[-1]=='\0')) {
+            fieldLen--; ch--;
+        }
+        if (fieldLen == 0) fieldLen = INT32_MIN; //blanks are NAs
+    }
+    *pch = ch;
+    *pFieldOff = fieldOff;
+    *pFieldLen = fieldLen;
+}
+
+
+// Counts the number of fields in a line, given pointer to start of line
+int countfields(const char *ch) {
+    // skip starting spaces even if sep==space, since they don't break up fields,
+    // (skip_whitechar would ignore them since it doesn't skip seps)
+    int ncol = 1;
+    int32_t fieldOff = 0;
+    int32_t fieldLen = 0;
+    if (args.sep == ' ') while (*ch == ' ') ch++;
+    skip_whitechar(&ch);
+    if (check_moveto_eol(&ch)) {
+        return 0; //empty line, 0 fields
+    }
+    while (ch < eol) {
+        parse_field(&ch, &fieldOff, &fieldLen); 
+        // parse_field advances ch to either sep or eol (\n, \r)
+        if (args.sep==' ' && *ch==args.sep) {
+            while (ch[1]==' ') ch++; //skip over multiple spaces
+            // if next character is an end-of-line char, advance to it
+            if (ch[1] == '\r' || ch[1] == '\n' || (ch[1] == '\0' && ch+1 == eol)) {
+                ch++;
+            }
+        }
+       // if sep, we have found a new field so count it and move to next
+        if (*ch == args.sep) {
+            ncol++; ch++;
+            continue;
+        }
+        // if ch is an eol, we conclude
+        // (this is what we want to happen for well behaved files)
+        if (check_moveto_eol(&ch)) { 
+            return ncol; 
+        }
+        if (ch!=eol) return -1; //only reachable if sep & quote rule are invalid for this line
+    }
+    return ncol;
+}
+
+// Takes char pointing to start of line, takes the desired ncols, and the 
+// FieldContext array, which it will populate.
+// Returns: number of found fields, 0 if none, -1 if error
+int iterfields(const char *ch, const int ncol, struct FieldContext *fields) {
+    //TODO: implement checking if n of parsed fields == ncol, + error handling
+    const char *start = ch;
+    int32_t fieldOff = 0;
+    int32_t fieldLen = 0;
+    int n_fields = 1;
+    // skip starting spaces even if sep==space, since they don't break up fields,
+    // (skip_whitechar ignores them since it doesn't skip seps)
+    if (args.sep == ' ') while (*ch == ' ') {ch++;}
+    skip_whitechar(&ch);
+    if (check_moveto_eol(&ch)) {
+        return 0; //empty line, 0 fields
+    }
+    while (ch < eol) {
+        fieldOff = ch - start;
+        parse_field(&ch, &fieldOff, &fieldLen);
+        // parse_field advances ch to either sep or eol (\n, \r)
+        fields[n_fields-1].off = fieldOff;
+        fields[n_fields-1].len = fieldLen;
+        if (args.sep == ' ' && *ch==args.sep) {
+            while (ch[1]==' ') ch++; //skip over multiple spaces
+            // if next character is an end-of-line char, advance to it
+            if (ch[1] == '\r' || ch[1] == '\n' || (ch[1] == '\0' && ch+1 == eol)) {
+                ch++;
+            }
+        }
+       // if sep, we have found a new field so count it and move to next
+        if (*ch == args.sep) {
+            n_fields++; ch++;
+            continue;
+        }
+        // if ch is at eol, conclude
+        // (this is what we want to happen for well behaved files)
+        if (check_moveto_eol(&ch)) {
+            //TODO: handle cases of inconsistent row length
+            if (n_fields < ncol) STOP("Internal error: iterfields: Number of fields (%d) did not reach ncol (%d)\n", n_fields, ncol);
+            if (n_fields > ncol) STOP("Internal error: iterfields: Number of fields (%d) exceeds ncol (%d)\n", n_fields, ncol);
+            return n_fields; 
+        }
+        if (ch!=eol) return -1; //should be only reachable if sep & quote rule are invalid for this line
+    }
+    return n_fields;
+}
