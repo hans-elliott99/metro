@@ -2,46 +2,48 @@
 #include <stdlib.h>
 #include <getopt.h> //getopt_long, struct option
 #include <string.h> //strcpy
-
 #include "readfile.h" //readfile
 #include "common.h" //args, clean_globals
-
+#include "simplestats.h"
 
 #define BUFSIZE 8192 //eventually this will have to be much bigger or dynamic 
 #define END_OF_LINE -1
 
-extern struct Args args;
+extern struct mainArgs args;
 extern char *optarg; //getopt.h
 extern int optind; //getopt.h
 
-
+// TODO: header, rowLimit, dec, quote
 static struct option const longopts[] =
 {
-  {"sep", required_argument, NULL, 's'}, //, . ; |
-  {"cols", required_argument, NULL, 'c'},
+  {"delim", required_argument, NULL, 'd'}, //, . ; | \t (ie, sep/fieldsep)
+  {"fields", required_argument, NULL, 'f'},
+  {"quotehead", no_argument, NULL, 'q'}, //flag, keep quotes on header names
 //   {GETOPT_HELP_OPTION_DECL},
 //   {GETOPT_VERSION_OPTION_DECL},
   {NULL, 0, NULL, 0}
 };
 
 // https://stackoverflow.com/questions/3939157/c-getopt-multiple-value
+// TODO:
+// problems: this method will stop on any '-', even if it is the beginning of a
+// column name and not the next option. (ex: main -c var1name -var2name -s,)
 int count_arg_list(int argc, char **argv, int _optind) {
-	_optind--;
+	_optind--; //optind left at beginning of next arg, decrement
 	int list_len = 0;
-	for (; _optind < argc-1 && //don't count the file name TODO: temp fix, what if input is piped?
-			  !(*argv[_optind] == '-' && strlen(argv[_optind]) == 2);
-		 ++_optind
-		 ) { ++list_len;
-		    printf("%s ", argv[_optind]);  
-			}
+	for (; _optind < argc && !(*argv[_optind] == '-'); ++_optind) { 
+		list_len++;
+		printf("%s ", argv[_optind]);  
+	}
 	putchar('\n');
 	return list_len;
 }
 
+
 void parse_selected_cols(int argc, char **argv, int _optind) {
 	int n = count_arg_list(argc, argv, _optind);
 	printf("list len = %d\n", n);
-	_optind--;
+	_optind--; //optind left at beginning of next arg, decrement
     args.n_colselect = n;
     args.colselect = malloc(sizeof(char*) * n);
 	if (args.colselect) {
@@ -53,59 +55,57 @@ void parse_selected_cols(int argc, char **argv, int _optind) {
 	}
 }
 
+void parse_fieldsep(char user_sep) {
+	// TODO: shell strips '\' char, is this the best way to account for this?
+	if (user_sep == 't') user_sep = '\t';
+	if (!(user_sep == ',' || 
+	     user_sep == '\t' || user_sep == '|' || 
+	     user_sep == ';'  || user_sep == ':')) {
+			STOP("provided delim is not implemented\n");
+	   }
+	args.sep = user_sep;
+}
 
 
 void argparse(int argc, char **argv) {
 	// TODO: implement piping input from command line https://www.delftstack.com/howto/c/pipe-in-c/
+	// - there may not be a filename, so need to add some control flow here
 	int optc;
 	// int parsing_vals = 0;
 	if (argc == 1) {
-		STOP("ERROR: No file provided.\n");
+		// usage()
+		STOP("ERROR: Usage: ./main [OPTIONS]...[FILENAME]\n");
 	}
 	printf("Program=%s. ArgCount=%d. File=%s\n", argv[0], argc, argv[argc-1]);
 	// Get target file
 	args.filename = malloc(strlen(argv[argc-1]) + 1);
 	strcpy(args.filename, argv[argc-1]);
-	// printf("args.filename=%s\n", args.filename);
+	// If there is a filename provided and we've grabbed it, rm it from argv
+	argv[argc] = NULL; argc--;
 
-	while ((optc = getopt_long(argc, argv, "s:c:", longopts, NULL)) != -1) {
+	while ((optc = getopt_long(argc, argv, "d:f:q", longopts, NULL)) != -1) {
 		switch (optc) {
-			case 's':
-				printf("Arg = s\n");
+			case 'd':
+				printf("Arg = d\n");
 				printf(" - val = %c\n", optarg[0]);
-				if (optarg[0]) {
+				if (optarg[0]) { //if char is not null
 					args.sep = optarg[0];
-					if (!(args.sep == ','  || 
-					     args.sep == '\t' || args.sep == '|' || 
-					     args.sep == ';'  || args.sep == ':')) {
-							STOP("Provide proper sep\n");
-					   }
+					parse_fieldsep(args.sep);
+				} else {
+					STOP("the delimeter must be one character\n");
 				}
 				break;
-			case 'c':
-				printf("Arg = c\n");
+			case 'f':
+				printf("Arg = f\n");
 				printf(" - val = ");
 				parse_selected_cols(argc, argv, optind);
 				break;
+			case 'q':
+				printf("Arg = q\n - (flag true)\n");
+				args.header_keep_quotes = true;
+				break;
 		}
 	}
-
-
-	// for (int i = 2; i < argc; ++i) {
-	// 	ch = argv[i];		
-	// 	while (*ch=='-') {
-	// 		ch++; parsing_vals=0;
-	// 	}
-	// 	if (!parsing_vals) {
-	// 		printf("arg: %s\n", ch);
-		
-	// 	} else {
-	// 		printf("- value: %s\n", ch);
-	// 	}
-	// 	parsing_vals = 1;
-	// }
-
-	args.whiteChar = (args.sep == ' ' ? '\t' : (args.sep == '\t' ? ' ' : 0)); //0: both
 }
 
 
@@ -115,11 +115,24 @@ void argparse(int argc, char **argv) {
 int main(int argc, char **argv) {
 	printf("[ MAIN ]\n");
 	int ae;
-	if ((ae = atexit(clean_globals)) != 0) {
+	if ((ae = atexit(clean_globals)) != 0)
 		STOP("Internal error: main.c: Cannot register 'clean_globals' for atexit.\n");
-	};
-	
+	// parse command line
 	argparse(argc, argv);
-
+	// open file (FILE *fp) and prep it for use
+	// fills out mainArgs with info needed to parse the file 
 	read_file();
+	if (!fp) STOP("File was lost.\n"); // hopefully unreachable
+	
+	// execute operation
+	basic_mean();
 }
+
+
+
+// selected_col_inds is sorted based on order cols appear in the data (from l to r),
+// which makes things simpler but prevents the user from specifying the order of
+// output. maybe spefic print fns can attempt that functionality 
+// for (int i = 0; i < args.n_colselect; i++){
+//     printf("args.selected_col_inds[%d] = %d\n", i, args.selected_col_inds[i]);
+// }

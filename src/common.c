@@ -2,13 +2,17 @@
 #include <stdint.h> //int32_t, int64_t, etc
 #include <ctype.h> //isspace, isdigit, 
 #include <string.h> //strlen, memset
+#include <stdio.h> //FILE, fclose
+#include <errno.h>
 
 #include "common.h"
 
+extern int errno;
 char **colnames = NULL;
+FILE *fp = NULL;
 
-// Default values for some args
-struct Args args = {
+// Default values for args
+struct mainArgs args = {
     .filename = NULL,
     .header = true,
     .header_keep_quotes = false,
@@ -31,6 +35,13 @@ struct Args args = {
 
 /////////////////////////////// HELPERS ////////////////////////////////////////
 void clean_globals(void) {
+    printf("\n__clean_globals__\n");
+    if (fp) {
+        printf("closing file\n");
+        if (fclose(fp) == EOF) 
+            fprintf(stderr, "ERROR %d: %s. (Failed in closing file).", errno, strerror(errno));
+        fp = NULL;
+    }
     if (args.colselect) {
         printf("freeing args.colselect\n");
         for (int i = 0; i < args.n_colselect; ++i) {
@@ -71,11 +82,11 @@ int array_pos(int *arr, int val, size_t arr_size) {
 }
 
 
-// // Recast a 'const char' as a 'char'
-// static char* _const_cast(const char *ptr) {
-//     union {const char *a; char *b;} tmp = { ptr };
-//     return tmp.b;
-// }
+// Recast a const char* as a char*
+static char* _const_cast(const char *ptr) {
+    union {const char *a; char *b;} tmp = { ptr };
+    return tmp.b;
+}
 
 ///////////////////////////// FIELD PARSING ////////////////////////////////////
 
@@ -183,9 +194,11 @@ bool check_end_of_field(const char *ch) {
 
 
 
-// Advance the char pointer to the end of the current field, advancing the
-// offset from the start of the line and calculating the field len (n chars)
-void parse_field(const char **pch, int32_t *pFieldOff, int32_t *pFieldLen) {
+// Advance the char pointer to the end of the current field, while incrementing
+// the offset from the start of the line to equal the start of this field, and 
+// calculating the field len (n chars) that correspond to actual data.
+void parse_field(const char **pch, int32_t *pFieldOff, int32_t *pFieldLen, 
+                 int keepQuotes) {
     // The idea - advance fieldOff to be an int from start-line to start-field,
     //        then record fieldLen from start-field to end-field
     bool stripWhite = args.stripWhite;
@@ -194,25 +207,31 @@ void parse_field(const char **pch, int32_t *pFieldOff, int32_t *pFieldLen) {
     int32_t fieldLen = 0;
     // skip leading spaces
     if ((*ch == ' ' && stripWhite) || (*ch == '\0' && ch < eol)) {
-        while(*(ch) == ' ' || (*ch == '\0' && ch < eol)) {
-            ch++; fieldOff++; 
-        }
-    } 
-    const char *fieldStart = ch;
+        while (*ch == ' ' || (*ch == '\0' && ch < eol)) { ch++; fieldOff++; }
+    }
+    // skip quotes
     // TODO: implement alternative quote rules. For now, just keep all quotes.
-    // if (*ch != quote ) or it does but we want to keep them:  
+    if (!keepQuotes) {
+        while(*ch == '"' || *ch == '\'') { ch++; fieldOff++; }
+    }
+    *pFieldOff = fieldOff; //offset from sol to start of field
+    const char *fieldStart = ch;
     {
-        while (!check_end_of_field(ch)) ch++; //will end on sep, \n, \r, or eol
+        //advance ch to one of: next sep, \n, \r, or eol
+        while (!check_end_of_field(ch)) ch++;
+        *pch = ch; //returning pointer to end of field.
         fieldLen = (int32_t)(ch - fieldStart);
-        // remove any lagging spaces 
+        // remove any white spaces which follow the data
         while (fieldLen > 0 && ((ch[-1]==' ' && stripWhite) || ch[-1]=='\0')) {
             fieldLen--; ch--;
         }
-        if (fieldLen == 0) fieldLen = INT32_MIN; //blanks are NAs
+        // remove following quotes
+        while (fieldLen > 0 && (!keepQuotes && (ch[-1]=='"' || ch[-1]=='\''))) {
+            fieldLen--; ch--;
+        }
+        if (fieldLen == 0) fieldLen = NA_INT32; //blanks are NAs
     }
-    *pch = ch;
-    *pFieldOff = fieldOff;
-    *pFieldLen = fieldLen;
+    *pFieldLen = fieldLen; //length from start of field to end of field.
 }
 
 
@@ -229,7 +248,7 @@ int countfields(const char *ch) {
         return 0; //empty line, 0 fields
     }
     while (ch < eol) {
-        parse_field(&ch, &fieldOff, &fieldLen); 
+        parse_field(&ch, &fieldOff, &fieldLen, 1); //1 : keep quotes 
         // parse_field advances ch to either sep or eol (\n, \r)
         if (args.sep==' ' && *ch==args.sep) {
             while (ch[1]==' ') ch++; //skip over multiple spaces
@@ -256,7 +275,8 @@ int countfields(const char *ch) {
 // Takes char pointing to start of line, takes the desired ncols, and the 
 // FieldContext array, which it will populate.
 // Returns: number of found fields, 0 if none, -1 if error
-int iterfields(const char *ch, const int ncol, struct FieldContext *fields) {
+int iterfields(const char *ch, const int ncol, 
+               struct FieldContext *fields, int keepQuotes) {
     //TODO: implement checking if n of parsed fields == ncol, + error handling
     const char *start = ch;
     int32_t fieldOff = 0;
@@ -264,20 +284,20 @@ int iterfields(const char *ch, const int ncol, struct FieldContext *fields) {
     int n_fields = 1;
     // skip starting spaces even if sep==space, since they don't break up fields,
     // (skip_whitechar ignores them since it doesn't skip seps)
-    if (args.sep == ' ') while (*ch == ' ') {ch++;}
+    if (args.sep == ' ') while (*ch == ' ') ch++;
     skip_whitechar(&ch);
     if (check_moveto_eol(&ch)) {
         return 0; //empty line, 0 fields
     }
     while (ch < eol) {
         fieldOff = ch - start;
-        parse_field(&ch, &fieldOff, &fieldLen);
-        // parse_field advances ch to either sep or eol (\n, \r)
+        parse_field(&ch, &fieldOff, &fieldLen, keepQuotes);
+        // parse_field advances ch to either sep or esol (\n, \r)
         fields[n_fields-1].off = fieldOff;
         fields[n_fields-1].len = fieldLen;
         if (args.sep == ' ' && *ch==args.sep) {
-            while (ch[1]==' ') ch++; //skip over multiple spaces
-            // if next character is an end-of-line char, advance to it
+            while (ch[1]==' ') ch++;
+            // ignore any spaces at end of line, advance to eol
             if (ch[1] == '\r' || ch[1] == '\n' || (ch[1] == '\0' && ch+1 == eol)) {
                 ch++;
             }
@@ -299,3 +319,55 @@ int iterfields(const char *ch, const int ncol, struct FieldContext *fields) {
     }
     return n_fields;
 }
+
+//////// FIELD CONVERTERS
+
+// characters that can be skipped over when checking if a string is numeric
+int isfloatskip(const char *ch) {
+    // TODO: https://github.com/Rdatatable/data.table/blob/a4c2b01720afa94dae69344c9889167122790e91/src/fread.c#L813
+    if (*ch == ' ' || *ch == '"' || *ch == '\'' || *ch == 'f' || *ch == '$' ||
+        (*ch == '\0' && ch < eol)
+        ) {
+        return 1;
+    }
+    return 0;
+}
+
+
+// TODO:
+// For self implementation: https://github.com/ochafik/LibCL/blob/master/src/main/resources/LibCL/strtof.c
+// Need to accomodate both '.' and ',' decimals, this might be most efficiently
+// done by messing with the locale settings: 
+// https://stackoverflow.com/questions/7951019/how-to-convert-string-to-float#:~:text=Use%20atof()%20or%20strtof()%20but,setlocale()%20and%20restore%20it%20after%20you%27re%20done. 
+// Can we do this without copying the string? Not with strtof, so need another
+// method. 
+
+float field_to_float(const char *sol, struct FieldContext field) {
+    float val;
+    int off = (int)field.off;
+    int len = (int)field.len; //len goes from start to sep, step to left of sep
+    const char *sof = sol + off;
+    // for (int i = 0; i < len; i++) printf("%c", *(sof+i));
+    // putchar('\n');    
+    // skip any spaces or quotes at beginning
+    while (isfloatskip(sof) && sof < eol) { sof++; len--; }
+    if (!isdigit(*sof)) return NA_FLOAT;
+    
+    // rm any undesired chars at end
+    while (isfloatskip(sof + len - 1) && len > 0) len--;
+    if ( !isdigit(*(sof + len - 1)) ) return NA_FLOAT;
+    printf(" (final len = %d) ", len);
+
+    // copy the parsed string into its own buffer
+    char str[len + 1];
+    strncpy(str, sof, len);
+    str[len] = '\0';
+    // convert str to float
+    char *endptr;
+    val = strtof(str, &endptr);
+    if (*endptr != '\0') printf("whoops\n");
+
+    printf("float found: str=_%s_ == %f\n", str, val);
+    return val;
+}
+

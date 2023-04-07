@@ -5,14 +5,18 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <float.h>
 
 #define STOP(...) do {fprintf(stderr, __VA_ARGS__); exit(0); } while(0)
+#define NA_INT32 INT32_MIN
+#define NA_FLOAT FLT_MIN
 
 // GLOBALS
+FILE *fp;
 const char *sol, *eol;
 char **colnames;
 
-struct Args {
+struct mainArgs {
     // arguments supplied by user (optionally)
     char *filename;
     // const char *input; //TODO: figure out piping on cli
@@ -30,7 +34,7 @@ struct Args {
     int ncols; //n of detected cols
     int n_colselect; //n of selected cols
     bool *col_is_selected;  //array, len==ncols, true at indices of user selected cols
-    int *selected_col_inds; //array, len==n_colselect, contains indices of the selected cols 
+    int *selected_col_inds; //array, len==n_colselect, contains indices of the selected cols, SORTED left to right 
     char whiteChar; //what is considered whitespace - ' ', '\t', or  for both
     // char **colnames; //array of column names
     bool stripWhite; //whether to strip whitespace, will be dependent on operation
@@ -55,9 +59,10 @@ bool check_moveto_eol(const char **pch);
 int isdelim(const char c);
 char detect_fieldsep(const char *ch, int32_t llen);
 bool check_end_of_field(const char *ch);
-void parse_field(const char **pch, int32_t *pFieldOff, int32_t *pFieldLen);
+void parse_field(const char **pch, int32_t *pFieldOff, int32_t *pFieldLen, int keepQuotes);
 int countfields(const char *ch);
-int iterfields(const char *ch, const int ncol, struct FieldContext *fields);
+int iterfields(const char *ch, const int ncol, struct FieldContext *fields, int keepQuotes);
+float field_to_float(const char *sol, struct FieldContext field);
 
 
 #endif //COMMON_H_
