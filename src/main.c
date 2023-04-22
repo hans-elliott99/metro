@@ -113,7 +113,7 @@ void argparse(int argc, char **argv) {
 
 
 int main(int argc, char **argv) {
-	printf("[ MAIN ]\n");
+	printf("[ PROCESS ARGUMENTS ]\n");
 	int ae;
 	if ((ae = atexit(clean_globals)) != 0)
 		STOP("Internal error: main.c: Cannot register 'clean_globals' for atexit.\n");
@@ -121,11 +121,14 @@ int main(int argc, char **argv) {
 	argparse(argc, argv);
 	// open file (FILE *fp) and prep it for use
 	// fills out mainArgs with info needed to parse the file 
+	printf("[ READFILE ]\n");
 	read_file();
 	if (!fp) STOP("File was lost.\n"); // hopefully unreachable
 	
 	// execute operation
-	basic_mean();
+	printf("[ OPERATION ]\n");
+	file_info();
+	column_mean();
 }
 
 

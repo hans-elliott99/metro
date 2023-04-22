@@ -60,7 +60,6 @@ void pretty_print_table(FILE *fp) {
 ////////////////////////////////// READFILE ////////////////////////////////////
 
 int read_file(void) {
-    printf("[ READFILE ]\n");
     // ================================
     // [1] Process Arguments & do setup
     // ================================
@@ -174,10 +173,9 @@ int read_file(void) {
             if (fields[i].len == NA_INT32) {
                 // NOTE: this solution works as long as field.len is never used
                 //  to iterate, since NA_INT32 = -2147483648.
-                // TODO: if multiple NAs, add NA0, NA1, etc so user could select
-                //  them as desired.
-                colnames[i] = malloc(sizeof("NA0"));
-                snprintf(colnames[i], sizeof("NA0"), "NA%d", i);
+                // TODO: need a maximum value for missing colnames - max n of cols?
+                colnames[i] = malloc(sizeof("NA012345"));
+                snprintf(colnames[i], sizeof("NA012345"), "NA%d", i);
             } else {
                 colnames[i] = malloc(fields[i].len + 1);
                 strncpy(colnames[i], sol + fields[i].off, fields[i].len); //dest, src, n
@@ -211,47 +209,18 @@ int read_file(void) {
             // as if only the n_colsfound cols were selected by the user
             args.n_colselect = n_colsfound;
         }
-
-        //////////////////////////
-        // Temp Info Dump 
-        /////////////////////////
-        printf("Columns:\n");
-        for (int i = 0; i < args.ncols; i++) {
-            printf("Field: %s", colnames[i]);
-            printf("\t(off = %d | len = %d)", fields[i].off, fields[i].len);
-            printf(args.col_is_selected[i] ? " [x]\n" : "\n");
-        }
-
-        // for (int i = 0; *(sol + i); i++) printf("%c ", *(sol + i));
-        printf("\ninput line: %s", line);
-        printf("nchars: %ld | bufsize : %ld\n", llen, lsize);
-        printf("processed line: %s", sol);
-        printf("skiprows: %d | skipchar %d\n", args.skiprows, args.skipchars);
         // If we've successfully parsed the header, break out of loop
         break;
     }
     if (llen == -1 && errno==0) {
-        printf("WARNING: Reached end of file and found only whitespace.\n");
+        STOP("WARNING: Reached end of file and found only whitespace.\n");
     } else if (llen == -1) {
         STOP("ERROR: %s (Internal error (%d) reading file).\n", strerror(errno), errno);
     }
     free(line);
-    // bring pointer back to start of file - only necessary if we're 
     rewind(fp);
-    ///////////////////////////////////////////////////////////////////////
-    //=========================================================================
-    // [5] Close Up.
-    // Detect number of columns & identify which columns to skip
-    //========================================================================= 
-    // Next: figure out how we're going to iterate through all the data and pluck out the cols we're interested in.
     
-    // Dispatch fp to operations
-    // pretty_print_table(fp);
-    
-
-    
-    return 1;
-
+    return 0;
 }
 
 

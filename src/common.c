@@ -82,11 +82,11 @@ int array_pos(int *arr, int val, size_t arr_size) {
 }
 
 
-// Recast a const char* as a char*
-static char* _const_cast(const char *ptr) {
-    union {const char *a; char *b;} tmp = { ptr };
-    return tmp.b;
-}
+// // Recast a const char* as a char*
+// static char* _const_cast(const char *ptr) {
+//     union {const char *a; char *b;} tmp = { ptr };
+//     return tmp.b;
+// }
 
 ///////////////////////////// FIELD PARSING ////////////////////////////////////
 
@@ -147,10 +147,8 @@ char detect_fieldsep(const char *ch, int32_t llen) {
     // simple: count n of ocurrences of each sep in the given line
     while (ch < eol) {
         if (!isdelim(*ch)) {
-            // printf(" %c ", *ch);
             ch++;
         } else {
-            // printf(" !%c!", *ch);
             switch(*ch++) {
                 case ',' : scores[comma]++; break;
                 case '\t': scores[tab]++; break;
@@ -168,7 +166,6 @@ char detect_fieldsep(const char *ch, int32_t llen) {
             best_score = scores[i];
         }
     }
-    // printf("best sep: %d, score: %d\n", best_sep, best_score);
     if (best_score > 0) {
         switch(best_sep) {
             case comma : sep = ','; break;
@@ -197,10 +194,9 @@ bool check_end_of_field(const char *ch) {
 // Advance the char pointer to the end of the current field, while incrementing
 // the offset from the start of the line to equal the start of this field, and 
 // calculating the field len (n chars) that correspond to actual data.
+// keepQuotes: if 0, skip over " or ' chars at the beginning/end of each field. 
 void parse_field(const char **pch, int32_t *pFieldOff, int32_t *pFieldLen, 
                  int keepQuotes) {
-    // The idea - advance fieldOff to be an int from start-line to start-field,
-    //        then record fieldLen from start-field to end-field
     bool stripWhite = args.stripWhite;
     const char *ch = *pch;
     int32_t fieldOff = *pFieldOff; // may be greater than 0
@@ -209,7 +205,7 @@ void parse_field(const char **pch, int32_t *pFieldOff, int32_t *pFieldLen,
     if ((*ch == ' ' && stripWhite) || (*ch == '\0' && ch < eol)) {
         while (*ch == ' ' || (*ch == '\0' && ch < eol)) { ch++; fieldOff++; }
     }
-    // skip quotes
+    // skip quotes at field start
     // TODO: implement alternative quote rules. For now, just keep all quotes.
     if (!keepQuotes) {
         while(*ch == '"' || *ch == '\'') { ch++; fieldOff++; }
@@ -225,20 +221,20 @@ void parse_field(const char **pch, int32_t *pFieldOff, int32_t *pFieldLen,
         while (fieldLen > 0 && ((ch[-1]==' ' && stripWhite) || ch[-1]=='\0')) {
             fieldLen--; ch--;
         }
-        // remove following quotes
+        // remove quotes from field end
         while (fieldLen > 0 && (!keepQuotes && (ch[-1]=='"' || ch[-1]=='\''))) {
             fieldLen--; ch--;
         }
         if (fieldLen == 0) fieldLen = NA_INT32; //blanks are NAs
     }
-    *pFieldLen = fieldLen; //length from start of field to end of field.
+    *pFieldLen = fieldLen; //length from fieldOff to end of field
 }
 
 
 // Counts the number of fields in a line, given pointer to start of line
 int countfields(const char *ch) {
     // skip starting spaces even if sep==space, since they don't break up fields,
-    // (skip_whitechar would ignore them since it doesn't skip seps)
+    // (skip_whitechar ignores them since it doesn't skip seps)
     int ncol = 1;
     int32_t fieldOff = 0;
     int32_t fieldLen = 0;
@@ -263,7 +259,7 @@ int countfields(const char *ch) {
             continue;
         }
         // if ch is an eol, we conclude
-        // (this is what we want to happen for well behaved files)
+        // (this is what we want to reach for well behaved rows)
         if (check_moveto_eol(&ch)) { 
             return ncol; 
         }
@@ -272,9 +268,10 @@ int countfields(const char *ch) {
     return ncol;
 }
 
-// Takes char pointing to start of line, takes the desired ncols, and the 
-// FieldContext array, which it will populate.
-// Returns: number of found fields, 0 if none, -1 if error
+// Takes char pointing to start of line, the desired ncols, and the 
+// FieldContext array - which it will populate.
+// keepQuotes: whether to keep quotes when parsing the fields (0 False, 1 True).
+// Returns: the number of found fields, 0 if none, -1 if error
 int iterfields(const char *ch, const int ncol, 
                struct FieldContext *fields, int keepQuotes) {
     //TODO: implement checking if n of parsed fields == ncol, + error handling
@@ -292,7 +289,7 @@ int iterfields(const char *ch, const int ncol,
     while (ch < eol) {
         fieldOff = ch - start;
         parse_field(&ch, &fieldOff, &fieldLen, keepQuotes);
-        // parse_field advances ch to either sep or esol (\n, \r)
+        // parse_field advances ch to either sep or eol (\n, \r)
         fields[n_fields-1].off = fieldOff;
         fields[n_fields-1].len = fieldLen;
         if (args.sep == ' ' && *ch==args.sep) {
@@ -339,16 +336,13 @@ int isfloatskip(const char *ch) {
 // Need to accomodate both '.' and ',' decimals, this might be most efficiently
 // done by messing with the locale settings: 
 // https://stackoverflow.com/questions/7951019/how-to-convert-string-to-float#:~:text=Use%20atof()%20or%20strtof()%20but,setlocale()%20and%20restore%20it%20after%20you%27re%20done. 
-// Can we do this without copying the string? Not with strtof, so need another
+// Can we do this without copying the string? Not with strtof, would need another
 // method. 
-
 float field_to_float(const char *sol, struct FieldContext field) {
     float val;
     int off = (int)field.off;
-    int len = (int)field.len; //len goes from start to sep, step to left of sep
+    int len = (int)field.len;
     const char *sof = sol + off;
-    // for (int i = 0; i < len; i++) printf("%c", *(sof+i));
-    // putchar('\n');    
     // skip any spaces or quotes at beginning
     while (isfloatskip(sof) && sof < eol) { sof++; len--; }
     if (!isdigit(*sof)) return NA_FLOAT;
@@ -356,7 +350,6 @@ float field_to_float(const char *sol, struct FieldContext field) {
     // rm any undesired chars at end
     while (isfloatskip(sof + len - 1) && len > 0) len--;
     if ( !isdigit(*(sof + len - 1)) ) return NA_FLOAT;
-    printf(" (final len = %d) ", len);
 
     // copy the parsed string into its own buffer
     char str[len + 1];
@@ -365,9 +358,9 @@ float field_to_float(const char *sol, struct FieldContext field) {
     // convert str to float
     char *endptr;
     val = strtof(str, &endptr);
-    if (*endptr != '\0') printf("whoops\n");
+    if (*endptr != '\0') printf("Internal wanring: field_to_float: error creating null terminated string.\n");
 
-    printf("float found: str=_%s_ == %f\n", str, val);
+    // printf("float found: str=_%s_ == %f\n", str, val);
     return val;
 }
 
